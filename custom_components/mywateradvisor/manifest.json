@@ -1,0 +1,13 @@
+{
+  "domain": "mywateradvisor",
+  "name": "My Water Advisor (unofficial)",
+  "codeowners": ["@suschatt"],
+  "config_flow": true,
+  "dependencies": ["recorder"],
+  "documentation": "https://github.com/suschatt/ha-mywateradvisor",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/suschatt/ha-mywateradvisor/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}

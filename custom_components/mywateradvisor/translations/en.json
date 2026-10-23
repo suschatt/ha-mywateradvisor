@@ -1,0 +1,37 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "My Water Advisor",
+        "description": "Sign in with the email and password you use on mywateradvisor2.com. Hourly usage is imported as long-term statistics for the Energy dashboard.",
+        "data": {
+          "email": "Email",
+          "password": "Password",
+          "unit": "Unit your portal reports usage in",
+          "backfill_days": "Days of history to import on first setup"
+        },
+        "data_description": {
+          "unit": "Values are not converted. Pick the unit shown on your portal's usage chart.",
+          "backfill_days": "Up to 365. Larger values make the first import take longer."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-enter your My Water Advisor password",
+        "description": "The portal rejected the saved password for {email}.",
+        "data": {
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "The portal rejected the email or password.",
+      "cannot_connect": "Could not reach the My Water Advisor portal. Try again later.",
+      "no_meters": "Signed in, but no meters are linked to this account.",
+      "unknown": "Unexpected error. Check the Home Assistant log."
+    },
+    "abort": {
+      "already_configured": "This account is already set up.",
+      "reauth_successful": "Password updated."
+    }
+  }
+}
