@@ -17,6 +17,12 @@ CONF_BACKFILL_DAYS = "backfill_days"
 # {statistic_id: "YYYY-MM-DD" (next local day to import) | "done"}
 CONF_BACKFILL_STATE = "backfill_state"
 BACKFILL_DONE = "done"
+# {statistic_id: "YYYY-MM-DD"}: local day of the last complete import. When
+# the last stored hour is old (no usage since), polls re-read only from this
+# day minus LATE_DATA_DAYS instead of from that hour, so the window doesn't
+# grow forever. Readings later than LATE_DATA_DAYS are then missed.
+CONF_CHECKED_THROUGH = "checked_through"
+LATE_DATA_DAYS = 7
 
 # Import history in chunks of this many days, saving progress after each,
 # so a long backfill shows up month by month and resumes after an error.

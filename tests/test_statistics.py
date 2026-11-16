@@ -196,9 +196,13 @@ async def test_meter_without_readings_is_not_backfilled_every_poll(
     await _setup(hass, entry, portal)
     assert portal.calls[0][0] == date(2026, 8, 24)  # full window once
 
+    await async_wait_recording_done(hass)
+    # Older chunks stored zero hours, so the last stored hour is Sep 23. The
+    # next poll reads 7 days back from the last check, not from Sep 23.
     portal.calls.clear()
+    freezer.move_to("2026-10-24T19:36:00+00:00")
     await _refresh(hass, entry, portal)
-    assert [c[0] for c in portal.calls] == [date(2026, 10, 20)]
+    assert [c[0] for c in portal.calls] == [date(2026, 10, 16)]
 
 
 async def test_upgrade_from_0_1_does_not_reimport_history(
@@ -211,7 +215,9 @@ async def test_upgrade_from_0_1_does_not_reimport_history(
     await async_wait_recording_done(hass)
 
     # A 0.1.x entry has no backfill_state at all.
-    data = {k: v for k, v in entry.data.items() if k != CONF_BACKFILL_STATE}
+    data = {
+        k: v for k, v in entry.data.items() if k not in (CONF_BACKFILL_STATE, "checked_through")
+    }
     hass.config_entries.async_update_entry(entry, data=data)
     portal.calls.clear()
     await _refresh(hass, entry, portal)

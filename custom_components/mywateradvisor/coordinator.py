@@ -36,6 +36,8 @@ from .const import (
     CHUNK_DAYS,
     CONF_BACKFILL_DAYS,
     CONF_BACKFILL_STATE,
+    CONF_CHECKED_THROUGH,
+    LATE_DATA_DAYS,
     CONF_UNIT,
     DEFAULT_BACKFILL_DAYS,
     DEFAULT_UNIT,
@@ -174,11 +176,14 @@ class MwaCoordinator(DataUpdateCoordinator[None]):
 
     def _save_backfill_state(self, statistic_id: str, value: str) -> None:
         """Persist backfill progress so an interrupted import resumes."""
-        state = self._backfill_state()
-        state[statistic_id] = value
+        self._save_entry_value(CONF_BACKFILL_STATE, statistic_id, value)
+
+    def _save_entry_value(self, key: str, statistic_id: str, value: str) -> None:
+        """Set entry.data[key][statistic_id] = value."""
+        values = dict(self.config_entry.data.get(key) or {})
+        values[statistic_id] = value
         self.hass.config_entries.async_update_entry(
-            self.config_entry,
-            data={**self.config_entry.data, CONF_BACKFILL_STATE: state},
+            self.config_entry, data={**self.config_entry.data, key: values}
         )
 
     async def _sum_before(self, statistic_id: str, start: datetime) -> float:
@@ -222,6 +227,11 @@ class MwaCoordinator(DataUpdateCoordinator[None]):
         else:
             last_day = today
         recent_day = last_day - timedelta(days=LOOKBACK_DAYS)
+        checked = (self.config_entry.data.get(CONF_CHECKED_THROUGH) or {}).get(stat_id)
+        if checked:
+            recent_day = max(
+                recent_day, date.fromisoformat(checked) - timedelta(days=LATE_DATA_DAYS)
+            )
 
         progress = self._backfill_state().get(stat_id)
         if progress is None and CONF_BACKFILL_STATE not in self.config_entry.data and has_stats:
@@ -306,6 +316,7 @@ class MwaCoordinator(DataUpdateCoordinator[None]):
                 self.unit,
             )
 
+        self._save_entry_value(CONF_CHECKED_THROUGH, stat_id, today.isoformat())
         if backfilling:
             _LOGGER.info(
                 "Meter %s: history import complete from %s (total %.1f %s)",
