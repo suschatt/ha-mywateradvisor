@@ -26,7 +26,9 @@ extra hardware.
 > [!NOTE]
 > **Unofficial.** Not affiliated with, endorsed by, or supported by Master
 > Meter, Inc., Harmony, or any water utility. It reads the same undocumented
-> API the portal's website uses, which can change without notice.
+> API the portal's website uses, which can change without notice. The portal's
+> Terms of Use restrict automated access without written consent; check with
+> your utility before relying on it.
 
 ## ✨ Features
 
@@ -35,8 +37,10 @@ extra hardware.
 | 📊 **Energy dashboard ready** | One long-term statistic per meter, selectable as a water source. |
 | ⏱️ **Hourly detail** | Usage lands in the hour it happened, not the hour it was downloaded. |
 | 🕰️ **History backfill** | Imports up to 365 days on first setup (default 30). |
-| 🔄 **Self-correcting** | Re-reads the last 3 days on every update, so late or corrected readings are fixed. |
+| 🔄 **Self-correcting** | Re-reads the last 3 days on every update, so late or corrected readings are fixed. Correction readings cancel the spike they correct. |
 | 🔐 **UI setup** | Sign in from Home Assistant's integrations page. No YAML, tokens, or extra servers. |
+| 🛡️ **Lockout-safe** | Backs off when the portal refuses a login and caps background logins at 8 a day, across restarts. |
+| ⚙️ **Configurable** | Poll interval (1-24 h) and how your portal labels its hours, under **Configure**. |
 | 🔁 **Re-auth prompt** | If your password changes, Home Assistant asks for the new one. |
 
 ## 🏙️ Utilities
@@ -152,20 +156,23 @@ steady overnight use.
 
 The integration only copies what the portal reports. For any finished day, the
 Energy dashboard total should equal the portal's **Daily** view, and the month
-total should match the portal's **Billing Month** view, give or take 0.1 per
-hour where the meter reported a small negative reading (counted as 0).
+total should match the portal's **Billing Month** view. When the portal posts
+a negative correction reading, it's subtracted from the hours just before it,
+so a bad spike and its correction cancel out.
 
 ---
 
 ## ⚙️ How updates work
 
 ```
-Every 4 hours
-  └─ sign in to the portal (or reuse the session)
+Every poll interval (default 4 hours)
+  └─ reuse the session, or sign in if the login guard allows it
   └─ list the meters on your account
   └─ for each meter:
        ├─ read hourly usage from 3 days before the last imported hour up to today
-       ├─ skip hours the portal hasn't reported yet (trailing zeros)
+       │    (at most 7 days before the last completed check)
+       ├─ hold back hours the portal hasn't reported yet (trailing zeros or estimates)
+       ├─ cancel negative correction readings against the hours before them
        └─ write them to Home Assistant's long-term statistics (overwriting corrections)
 ```
 
@@ -174,9 +181,40 @@ Every 4 hours
 - **Trailing zeros wait.** The portal fills hours it hasn't received yet with
   `0`. Those aren't imported until a later nonzero reading confirms them, so
   you won't see fake zero-usage hours.
+- **Estimates wait too.** Hours the portal marks as estimated are held back at
+  the end of the data until the real reading arrives.
+- **Very late data is skipped.** Readings that reach the portal more than
+  7 days after the hour they belong to are not picked up.
 - **Time zone.** Portal hours are local clock times. The integration uses your
   Home Assistant time zone (Settings → System → General), which must match
   your utility's.
+
+### Login protection
+
+The portal has been seen refusing logins with HTTP 400 for about a day, with
+the correct password, while it temporarily locked the account. So:
+
+- The integration signs in only when it has no session. Setup itself doesn't
+  sign in.
+- Only HTTP 401 counts as a wrong password. A 400, 403 or 429 makes it wait
+  15 minutes, then 30, 60 and so on up to 6 hours (longer if the portal sends
+  `Retry-After`). You're asked for the password only after 4 refusals in a
+  row, spread over about 4 hours.
+- Background logins are capped at 8 per rolling 24 hours.
+- This state is kept in Home Assistant's `.storage` folder, so restarts don't
+  reset it. Entering the password again clears it.
+
+---
+
+## 🔧 Options
+
+**Settings → Devices & services → My Water Advisor → Configure.** Saving
+reloads the integration.
+
+| Option | What it does |
+|---|---|
+| **Check the portal every** | 1 to 24 hours (default 4). The portal posts readings in batches, often a day late, so polling more often gains little and costs logins. |
+| **Portal hour labels mark** | Whether a portal label like 11:00 means usage from 11:00 to 12:00 (*start*, the default) or from 10:00 to 11:00 (*end*). Pick one day with a distinctive hour, such as a shower or irrigation run, and compare the portal's **Hourly** chart with the Energy dashboard. If usage shows up an hour off, switch this. It only affects newly imported hours; to re-import history, remove and re-add the integration. |
 
 ---
 
@@ -187,22 +225,21 @@ Every 4 hours
 | **"The portal rejected the email or password."** | Sign in at mywateradvisor2.com with the same details. Reset your password there if needed. |
 | **"Signed in, but no meters are linked to this account."** | Your portal account isn't linked to a utility account yet. Finish registration with your account number. |
 | **Nothing in the Energy picker** | Wait a couple of minutes after setup. Then check **Developer tools → Statistics** for `My Water Advisor`. |
-| **Today's usage is missing** | Normal: the portal is behind. Check the portal; if it's there too, wait for the next update (every 4 hours) or reload the integration. |
+| **Today's usage is missing** | Normal: the portal is behind. Check the portal; if it's there too, wait for the next update (your poll interval) or reload the integration. |
+| **"The portal refused the login."** or *Holding off login* in the log | The portal refused a login (often a temporary lock). The integration retries on its own with growing delays; don't reload repeatedly. If the browser can't sign in either, wait it out. The log shows the portal's message. |
 | **Wrong unit or numbers off by a factor** | The **Unit** setting doesn't match your portal. Delete the statistic in **Developer tools → Statistics**, then remove and re-add the integration with the right unit. |
+| **Bars are exactly one hour off** | Switch **Portal hour labels mark** under **Configure**. |
 | **Bars are a few hours off** | Your Home Assistant time zone doesn't match your utility's. |
 
 ### Debug logging
 
-Add this to `configuration.yaml`, restart, then reload the integration:
+Refused logins and failed requests are always logged as warnings, with the
+portal's status code and message (never your password or session token).
 
-```yaml
-logger:
-  logs:
-    custom_components.mywateradvisor: debug
-```
-
-Each update then logs the hours imported and the last reported hour. Include
-those lines (without your email) when opening an issue.
+For more detail, open **Settings → Devices & services → My Water Advisor** and
+choose **Enable debug logging**. Each update then logs the hours imported and
+the last reported hour. Include those lines (without your email) when opening
+an issue.
 
 ---
 
@@ -221,7 +258,7 @@ directly. A sensor would show the usage at the time it was downloaded instead.
 
 It's stored in Home Assistant's config entry storage, like every other cloud
 integration that signs in with a password, and is only sent to the portal's
-login endpoint over HTTPS.
+login endpoint over HTTPS. It never appears in the log.
 </details>
 
 <details>
@@ -253,7 +290,8 @@ days.
 
 Issues and pull requests are welcome, especially reports from other utilities.
 
-To run the tests:
+To run the tests (Python 3.14, which current Home Assistant needs; on Windows
+use WSL, since Home Assistant's test dependencies don't build natively):
 
 ```bash
 pip install -r requirements_test.txt
