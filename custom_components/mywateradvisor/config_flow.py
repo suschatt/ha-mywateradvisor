@@ -9,7 +9,13 @@ import uuid
 
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
+from homeassistant.core import callback
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
@@ -25,9 +31,18 @@ from homeassistant.helpers.selector import (
     TextSelectorType,
 )
 
-from .api import MwaApiError, MwaAuthError, MwaClient
+from .api import MwaApiError, MwaAuthError, MwaClient, MwaLoginRefusedError
 from .const import (
+    CONF_HOUR_LABEL,
+    CONF_POLL_HOURS,
+    DEFAULT_HOUR_LABEL,
+    DEFAULT_POLL_HOURS,
+    HOUR_LABEL_END,
+    HOUR_LABEL_START,
+    MAX_POLL_HOURS,
+    MIN_POLL_HOURS,
     CONF_BACKFILL_DAYS,
+    CONF_BACKFILL_STATE,
     CONF_DEVICE_ID,
     CONF_UNIT,
     DEFAULT_BACKFILL_DAYS,
@@ -36,6 +51,7 @@ from .const import (
     MAX_BACKFILL_DAYS,
     UNIT_OPTIONS,
 )
+from .coordinator import login_store
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -72,6 +88,18 @@ class MyWaterAdvisorConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> MwaOptionsFlow:
+        """Return the options flow."""
+        return MwaOptionsFlow()
+
+    def __init__(self) -> None:
+        """Initialize the flow."""
+        # One device id per setup attempt, reused if the user retries after
+        # an error, so the portal doesn't see a new device on every submit.
+        self._device_id = str(uuid.uuid4())
+
     async def _validate(
         self, email: str, password: str, device_id: str
     ) -> dict[str, str]:
@@ -84,6 +112,8 @@ class MyWaterAdvisorConfigFlow(ConfigFlow, domain=DOMAIN):
             meters = await client.get_meters()
         except MwaAuthError:
             return {"base": "invalid_auth"}
+        except MwaLoginRefusedError:
+            return {"base": "login_refused"}
         except MwaApiError:
             return {"base": "cannot_connect"}
         except Exception:
@@ -103,7 +133,7 @@ class MyWaterAdvisorConfigFlow(ConfigFlow, domain=DOMAIN):
             await self.async_set_unique_id(email.lower())
             self._abort_if_unique_id_configured()
 
-            device_id = str(uuid.uuid4())
+            device_id = self._device_id
             errors = await self._validate(email, user_input[CONF_PASSWORD], device_id)
             if not errors:
                 return self.async_create_entry(
@@ -114,6 +144,8 @@ class MyWaterAdvisorConfigFlow(ConfigFlow, domain=DOMAIN):
                         CONF_DEVICE_ID: device_id,
                         CONF_UNIT: user_input[CONF_UNIT],
                         CONF_BACKFILL_DAYS: int(user_input[CONF_BACKFILL_DAYS]),
+                        # Present (even empty) marks a 0.2+ entry; see coordinator.
+                        CONF_BACKFILL_STATE: {},
                     },
                 )
 
@@ -142,6 +174,9 @@ class MyWaterAdvisorConfigFlow(ConfigFlow, domain=DOMAIN):
                 entry.data[CONF_DEVICE_ID],
             )
             if not errors:
+                # The password works now: drop the background login backoff so
+                # the reloaded entry logs in right away.
+                await login_store(self.hass, entry.entry_id).async_remove()
                 return self.async_update_reload_and_abort(
                     entry, data_updates={CONF_PASSWORD: user_input[CONF_PASSWORD]}
                 )
@@ -152,3 +187,47 @@ class MyWaterAdvisorConfigFlow(ConfigFlow, domain=DOMAIN):
             description_placeholders={"email": entry.data[CONF_EMAIL]},
             errors=errors,
         )
+
+
+class MwaOptionsFlow(OptionsFlow):
+    """Poll interval and how the portal labels its hours."""
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Show the options form."""
+        if user_input is not None:
+            return self.async_create_entry(
+                data={
+                    CONF_POLL_HOURS: int(user_input[CONF_POLL_HOURS]),
+                    CONF_HOUR_LABEL: user_input[CONF_HOUR_LABEL],
+                }
+            )
+        options = self.config_entry.options
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_POLL_HOURS,
+                    default=options.get(CONF_POLL_HOURS, DEFAULT_POLL_HOURS),
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=MIN_POLL_HOURS,
+                        max=MAX_POLL_HOURS,
+                        step=1,
+                        unit_of_measurement="h",
+                        mode=NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Required(
+                    CONF_HOUR_LABEL,
+                    default=options.get(CONF_HOUR_LABEL, DEFAULT_HOUR_LABEL),
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[HOUR_LABEL_START, HOUR_LABEL_END],
+                        translation_key=CONF_HOUR_LABEL,
+                        mode=SelectSelectorMode.LIST,
+                    )
+                ),
+            }
+        )
+        return self.async_show_form(step_id="init", data_schema=schema)

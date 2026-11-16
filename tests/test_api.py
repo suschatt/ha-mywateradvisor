@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from custom_components.mywateradvisor.api import rows_to_hours, trim_unreported
+from custom_components.mywateradvisor.api import net_negatives, rows_to_hours, trim_unreported
 
 from .conftest import OCT21, OCT22, OCT23_PARTIAL
 
@@ -56,3 +56,39 @@ def test_spring_forward_day_keeps_all_volume() -> None:
     hours = rows_to_hours(rows, CHICAGO)
     assert len(hours) == 23
     assert sum(hours.values()) == sum(range(24))
+
+
+def test_hour_end_labels_shift_back_one_hour() -> None:
+    rows = _rows("2026-10-21", [float(h) for h in range(24)])
+    starts = rows_to_hours(rows, CHICAGO)
+    ends = rows_to_hours(rows, CHICAGO, label_is_end=True)
+    # Label 01:00 local is usage 00:00-01:00, i.e. 05:00 UTC (CDT).
+    assert ends[datetime(2026, 10, 21, 5, tzinfo=UTC)] == 1.0
+    assert sorted(ends) == [s - timedelta(hours=1) for s in sorted(starts)]
+
+
+def test_trailing_estimates_are_dropped_but_middle_ones_kept() -> None:
+    rows = _rows("2026-10-21", [1.0] * 24)
+    rows[5]["estimationType"] = 2  # middle estimate: kept
+    rows[22]["estimationType"] = 1  # trailing estimates: wait for the real reading
+    rows[23]["estimated"] = True
+    estimated: set = set()
+    hours = trim_unreported(rows_to_hours(rows, CHICAGO, estimated=estimated), estimated)
+    assert len(estimated) == 3
+    assert len(hours) == 22
+
+
+def test_negative_correction_cancels_earlier_spike() -> None:
+    rows = _rows("2026-10-21", [1.0, 500.0, 2.0, -498.0, 3.0] + [0.0] * 19)
+    hours = net_negatives(rows_to_hours(rows, CHICAGO))
+    assert all(v >= 0 for v in hours.values())
+    assert sum(hours.values()) == 8.0  # 1 + 500 + 2 - 498 + 3
+    # The correction comes off the most recent hours first: 2, then 496 of 500.
+    values = [hours[k] for k in sorted(hours)][:5]
+    assert values == [1.0, 4.0, 0.0, 0.0, 3.0]
+
+
+def test_unmatched_negative_is_dropped() -> None:
+    rows = _rows("2026-10-21", [-5.0, 2.0])
+    hours = net_negatives(rows_to_hours(rows, CHICAGO))
+    assert list(hours.values()) == [0.0, 2.0]

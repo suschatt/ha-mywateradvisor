@@ -7,7 +7,12 @@ from unittest.mock import patch
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.mywateradvisor.api import Meter, MwaApiError, MwaAuthError
+from custom_components.mywateradvisor.api import (
+    Meter,
+    MwaApiError,
+    MwaAuthError,
+    MwaLoginRefusedError,
+)
 from custom_components.mywateradvisor.const import (
     CONF_BACKFILL_DAYS,
     CONF_DEVICE_ID,
@@ -59,6 +64,7 @@ async def test_user_flow_creates_entry(hass: HomeAssistant) -> None:
     ("side_effect", "meters", "error"),
     [
         (MwaAuthError("no"), [], "invalid_auth"),
+        (MwaLoginRefusedError("no", 400, None), [], "login_refused"),
         (MwaApiError("down"), [], "cannot_connect"),
         (None, [], "no_meters"),
     ],
@@ -119,3 +125,16 @@ async def test_reauth_updates_password(hass: HomeAssistant) -> None:
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reauth_successful"
     assert entry.data[CONF_PASSWORD] == "new"
+
+
+async def test_options_flow(hass: HomeAssistant) -> None:
+    entry = MockConfigEntry(domain=DOMAIN, unique_id="someone@example.com", data={})
+    entry.add_to_hass(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] is FlowResultType.FORM
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"poll_hours": 12, "hour_label": "end"}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options == {"poll_hours": 12, "hour_label": "end"}
