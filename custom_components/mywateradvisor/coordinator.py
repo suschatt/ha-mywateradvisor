@@ -16,6 +16,7 @@ from homeassistant.components.recorder.statistics import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
@@ -24,6 +25,7 @@ from .api import (
     MwaApiError,
     MwaAuthError,
     MwaClient,
+    MwaLoginRefusedError,
     plan_chunks,
     rows_to_hours,
     trim_unreported,
@@ -38,10 +40,16 @@ from .const import (
     DEFAULT_UNIT,
     DOMAIN,
     LOOKBACK_DAYS,
+    REFUSALS_BEFORE_REAUTH,
     UPDATE_INTERVAL,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def login_store(hass: HomeAssistant, entry_id: str) -> Store[dict[str, Any]]:
+    """Storage for one entry's login guard, kept across restarts."""
+    return Store(hass, 1, f"{DOMAIN}.{entry_id}.login")
 
 
 def statistic_id_for(meter: Meter) -> str:
@@ -129,12 +137,28 @@ class MwaCoordinator(DataUpdateCoordinator[None]):
                 await self._import_meter(meter, meter.meter_count if per_meter else None)
         except MwaAuthError as err:
             raise ConfigEntryAuthFailed(str(err)) from err
+        except MwaLoginRefusedError as err:
+            # 400/403 also happen while the account is temporarily locked, so
+            # only ask for the password after several spaced refusals.
+            if err.status != 429 and self.client.guard.fail_count >= REFUSALS_BEFORE_REAUTH:
+                raise ConfigEntryAuthFailed(str(err)) from err
+            raise UpdateFailed(str(err)) from err
         except MwaApiError as err:
             raise UpdateFailed(str(err)) from err
+        finally:
+            self._schedule_next()
+
+    def _schedule_next(self) -> None:
+        """Poll normally, or wake when the login guard allows a login.
+
+        Only matters without a token: with one, the next poll needs no login.
+        """
+        wait = 0.0 if self.client.has_token else self.client.guard.wait_seconds()
+        self.update_interval = timedelta(seconds=wait + 60) if wait else UPDATE_INTERVAL
 
     def _backfill_state(self) -> dict[str, str]:
         """Return per-statistic backfill progress stored in the config entry."""
-        return dict(self.config_entry.data.get(CONF_BACKFILL_STATE, {}))
+        return dict(self.config_entry.data.get(CONF_BACKFILL_STATE) or {})
 
     def _save_backfill_state(self, statistic_id: str, value: str) -> None:
         """Persist backfill progress so an interrupted import resumes."""
@@ -180,20 +204,36 @@ class MwaCoordinator(DataUpdateCoordinator[None]):
             get_last_statistics, self.hass, 1, stat_id, True, {"sum"}
         )
         has_stats = bool(last.get(stat_id))
-        progress = self._backfill_state().get(stat_id)
+        # Re-read window anchored on what the recorder actually holds.
+        if has_stats:
+            last_day = _as_datetime(last[stat_id][0]["start"]).astimezone(tz).date()
+        else:
+            last_day = today
+        recent_day = last_day - timedelta(days=LOOKBACK_DAYS)
 
-        if progress == BACKFILL_DONE and has_stats:
+        progress = self._backfill_state().get(stat_id)
+        if progress is None and CONF_BACKFILL_STATE not in self.config_entry.data and has_stats:
+            # Entry from 0.1.x, which imported its history in one go.
+            progress = BACKFILL_DONE
+
+        if progress == BACKFILL_DONE:
             # Normal update: re-read a few days before the last imported hour.
-            last_start = _as_datetime(last[stat_id][0]["start"])
-            first_day = last_start.astimezone(tz).date() - timedelta(days=LOOKBACK_DAYS)
+            # Also covers a meter with no readings yet (no statistics): only
+            # the recent days are read, not the whole history every poll.
+            first_day = recent_day
             backfilling = False
-        elif progress not in (None, BACKFILL_DONE) and has_stats:
-            # Resume an interrupted backfill where it stopped.
-            first_day = date.fromisoformat(progress)
+        elif progress is not None:
+            # Resume an interrupted backfill. Progress is saved before the
+            # recorder commits, so never start after the last stored hour;
+            # with nothing stored yet, start the window over.
+            first_day = (
+                min(date.fromisoformat(progress), recent_day)
+                if has_stats
+                else today - timedelta(days=self.backfill_days)
+            )
             backfilling = True
         else:
-            # New setup (even if older statistics exist) or statistics deleted:
-            # import the full history window again.
+            # New setup: import the full history window.
             first_day = today - timedelta(days=self.backfill_days)
             backfilling = True
         first_day = min(first_day, today)

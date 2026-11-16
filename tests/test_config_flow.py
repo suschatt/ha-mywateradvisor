@@ -7,7 +7,12 @@ from unittest.mock import patch
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.mywateradvisor.api import Meter, MwaApiError, MwaAuthError
+from custom_components.mywateradvisor.api import (
+    Meter,
+    MwaApiError,
+    MwaAuthError,
+    MwaLoginRefusedError,
+)
 from custom_components.mywateradvisor.const import (
     CONF_BACKFILL_DAYS,
     CONF_DEVICE_ID,
@@ -59,6 +64,7 @@ async def test_user_flow_creates_entry(hass: HomeAssistant) -> None:
     ("side_effect", "meters", "error"),
     [
         (MwaAuthError("no"), [], "invalid_auth"),
+        (MwaLoginRefusedError("no", 400, None), [], "login_refused"),
         (MwaApiError("down"), [], "cannot_connect"),
         (None, [], "no_meters"),
     ],

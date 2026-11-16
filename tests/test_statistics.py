@@ -11,9 +11,10 @@ from pytest_homeassistant_custom_component.components.recorder.common import (
     async_wait_recording_done,
 )
 
-from custom_components.mywateradvisor.api import Meter, MwaAuthError
+from custom_components.mywateradvisor.api import Meter, MwaAuthError, MwaLoginRefusedError
 from custom_components.mywateradvisor.const import (
     CONF_BACKFILL_DAYS,
+    CONF_BACKFILL_STATE,
     CONF_DEVICE_ID,
     CONF_UNIT,
     DOMAIN,
@@ -157,10 +158,65 @@ async def test_bad_password_starts_reauth(recorder_mock, hass: HomeAssistant) ->
     entry.add_to_hass(hass)
     with patch(f"{CLIENT}.login", side_effect=MwaAuthError("rejected")):
         await hass.config_entries.async_setup(entry.entry_id)
-        await hass.async_block_till_done()
-    assert entry.state is ConfigEntryState.SETUP_ERROR
+        await hass.async_block_till_done(wait_background_tasks=True)
+    # Setup no longer logs in; the first refresh does, and a 401 asks for
+    # the password.
+    assert entry.state is ConfigEntryState.LOADED
     flows = hass.config_entries.flow.async_progress()
     assert any(f["context"]["source"] == "reauth" for f in flows)
+
+
+async def test_login_refused_retries_without_reauth(recorder_mock, hass: HomeAssistant) -> None:
+    entry = _entry(backfill=2)
+    entry.add_to_hass(hass)
+    refused = MwaLoginRefusedError("Login refused (HTTP 400)", 400, None)
+    with patch(f"{CLIENT}.login", side_effect=refused):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done(wait_background_tasks=True)
+    assert entry.state is ConfigEntryState.LOADED
+    assert not entry.runtime_data.last_update_success
+    flows = hass.config_entries.flow.async_progress()
+    assert not any(f["context"]["source"] == "reauth" for f in flows)
+
+
+async def _refresh(hass: HomeAssistant, entry: MockConfigEntry, portal: FakePortal) -> None:
+    with patch(f"{CLIENT}.get_meters", return_value=[METER]), patch(
+        f"{CLIENT}.get_hourly_rows", side_effect=portal.get_hourly_rows
+    ):
+        await entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+
+
+async def test_meter_without_readings_is_not_backfilled_every_poll(
+    recorder_mock, hass: HomeAssistant, setup_tz, freezer
+) -> None:
+    freezer.move_to("2026-10-23T19:36:00+00:00")
+    portal = FakePortal({})
+    entry = _entry(backfill=60)
+    await _setup(hass, entry, portal)
+    assert portal.calls[0][0] == date(2026, 8, 24)  # full window once
+
+    portal.calls.clear()
+    await _refresh(hass, entry, portal)
+    assert [c[0] for c in portal.calls] == [date(2026, 10, 20)]
+
+
+async def test_upgrade_from_0_1_does_not_reimport_history(
+    recorder_mock, hass: HomeAssistant, setup_tz, freezer
+) -> None:
+    freezer.move_to("2026-10-23T19:36:00+00:00")
+    portal = FakePortal({date(2026, 10, 21): OCT21, date(2026, 10, 22): OCT22})
+    entry = _entry(backfill=60)
+    await _setup(hass, entry, portal)
+    await async_wait_recording_done(hass)
+
+    # A 0.1.x entry has no backfill_state at all.
+    data = {k: v for k, v in entry.data.items() if k != CONF_BACKFILL_STATE}
+    hass.config_entries.async_update_entry(entry, data=data)
+    portal.calls.clear()
+    await _refresh(hass, entry, portal)
+    # Re-reads from 3 days before the last stored hour (Oct 22 23:00).
+    assert [c[0] for c in portal.calls] == [date(2026, 10, 19)]
 
 
 async def test_unload(recorder_mock, hass: HomeAssistant, setup_tz, freezer) -> None:

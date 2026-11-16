@@ -27,7 +27,8 @@
       "invalid_auth": "The portal rejected the email or password.",
       "cannot_connect": "Could not reach the My Water Advisor portal. Try again later.",
       "no_meters": "Signed in, but no meters are linked to this account.",
-      "unknown": "Unexpected error. Check the Home Assistant log."
+      "unknown": "Unexpected error. Check the Home Assistant log.",
+      "login_refused": "The portal refused the login. Check the password; if it is correct, the account may be temporarily locked. Wait an hour before trying again."
     },
     "abort": {
       "already_configured": "This account is already set up.",

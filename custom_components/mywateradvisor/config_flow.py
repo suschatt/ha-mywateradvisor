@@ -25,9 +25,10 @@ from homeassistant.helpers.selector import (
     TextSelectorType,
 )
 
-from .api import MwaApiError, MwaAuthError, MwaClient
+from .api import MwaApiError, MwaAuthError, MwaClient, MwaLoginRefusedError
 from .const import (
     CONF_BACKFILL_DAYS,
+    CONF_BACKFILL_STATE,
     CONF_DEVICE_ID,
     CONF_UNIT,
     DEFAULT_BACKFILL_DAYS,
@@ -36,6 +37,7 @@ from .const import (
     MAX_BACKFILL_DAYS,
     UNIT_OPTIONS,
 )
+from .coordinator import login_store
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -90,6 +92,8 @@ class MyWaterAdvisorConfigFlow(ConfigFlow, domain=DOMAIN):
             meters = await client.get_meters()
         except MwaAuthError:
             return {"base": "invalid_auth"}
+        except MwaLoginRefusedError:
+            return {"base": "login_refused"}
         except MwaApiError:
             return {"base": "cannot_connect"}
         except Exception:
@@ -120,6 +124,8 @@ class MyWaterAdvisorConfigFlow(ConfigFlow, domain=DOMAIN):
                         CONF_DEVICE_ID: device_id,
                         CONF_UNIT: user_input[CONF_UNIT],
                         CONF_BACKFILL_DAYS: int(user_input[CONF_BACKFILL_DAYS]),
+                        # Present (even empty) marks a 0.2+ entry; see coordinator.
+                        CONF_BACKFILL_STATE: {},
                     },
                 )
 
@@ -148,6 +154,9 @@ class MyWaterAdvisorConfigFlow(ConfigFlow, domain=DOMAIN):
                 entry.data[CONF_DEVICE_ID],
             )
             if not errors:
+                # The password works now: drop the background login backoff so
+                # the reloaded entry logs in right away.
+                await login_store(self.hass, entry.entry_id).async_remove()
                 return self.async_update_reload_and_abort(
                     entry, data_updates={CONF_PASSWORD: user_input[CONF_PASSWORD]}
                 )
