@@ -87,6 +87,8 @@ class MwaClient:
                 data = await resp.json(content_type=None)
         except (aiohttp.ClientError, TimeoutError) as err:
             raise MwaApiError(f"Cannot reach the portal: {err}") from err
+        except ValueError as err:  # body wasn't JSON (e.g. a maintenance page)
+            raise MwaApiError("Unexpected login response from the portal") from err
 
         token = data.get("token") if isinstance(data, dict) else None
         if not token:
@@ -118,6 +120,8 @@ class MwaClient:
                     return await resp.json(content_type=None)
             except (aiohttp.ClientError, TimeoutError) as err:
                 raise MwaApiError(f"Cannot reach the portal: {err}") from err
+            except ValueError as err:  # body wasn't JSON (e.g. a maintenance page)
+                raise MwaApiError(f"GET {path} returned a non-JSON response") from err
         raise MwaApiError("Unreachable")  # pragma: no cover
 
     async def get_meters(self) -> list[Meter]:
@@ -125,14 +129,17 @@ class MwaClient:
         data = await self._get("/consumer/meters")
         if not isinstance(data, list):
             raise MwaApiError("Unexpected meters response")
-        return [
-            Meter(
-                meter_count=int(m["meterCount"]),
-                serial=str(m.get("meterSn") or m["meterCount"]),
-                address=str(m.get("fullAddress") or ""),
-            )
-            for m in data
-        ]
+        try:
+            return [
+                Meter(
+                    meter_count=int(m["meterCount"]),
+                    serial=str(m.get("meterSn") or m["meterCount"]),
+                    address=str(m.get("fullAddress") or ""),
+                )
+                for m in data
+            ]
+        except (KeyError, TypeError, ValueError, AttributeError) as err:
+            raise MwaApiError(f"Unexpected meters data: {err!r}") from err
 
     async def get_hourly_rows(
         self, first: date, last: date, meter_count: int | None = None
@@ -167,11 +174,14 @@ def rows_to_hours(rows: list[dict[str, Any]], tz: tzinfo) -> dict[datetime, floa
     """
     hours: dict[datetime, float] = {}
     for row in rows:
-        label = row.get("dateTime")
-        if not label:
-            continue
-        naive = datetime.fromisoformat(label).replace(tzinfo=None)
-        value = float(row.get("cons") or 0.0)
+        try:
+            label = row.get("dateTime")
+            if not label:
+                continue
+            naive = datetime.fromisoformat(label).replace(tzinfo=None)
+            value = float(row.get("cons") or 0.0)
+        except (AttributeError, TypeError, ValueError) as err:
+            raise MwaApiError(f"Unexpected hourly data: {row!r}") from err
         start = naive.replace(tzinfo=tz).astimezone(UTC)
         if start in hours:
             alt = naive.replace(tzinfo=tz, fold=1).astimezone(UTC)
@@ -182,6 +192,23 @@ def rows_to_hours(rows: list[dict[str, Any]], tz: tzinfo) -> dict[datetime, floa
                 continue
         hours[start] = value
     return hours
+
+
+def plan_chunks(first: date, last: date, size: int) -> list[tuple[date, date]]:
+    """Split the local days first..last into chunks of at most `size` days.
+
+    Chunks are aligned to end on `last`, so the newest chunk always holds the
+    most recent `size` days, where not-yet-reported hours can occur. Older
+    chunks are complete history.
+    """
+    chunks: list[tuple[date, date]] = []
+    end = last
+    while end >= first:
+        start = max(first, end - timedelta(days=size - 1))
+        chunks.append((start, end))
+        end = start - timedelta(days=1)
+    chunks.reverse()
+    return chunks
 
 
 def trim_unreported(hours: dict[datetime, float]) -> dict[datetime, float]:

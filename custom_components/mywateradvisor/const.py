@@ -13,6 +13,14 @@ APP_ID = "3a869241-d476-40f6-a923-d789d63db11d"
 CONF_DEVICE_ID = "device_id"
 CONF_UNIT = "unit"
 CONF_BACKFILL_DAYS = "backfill_days"
+# Per-statistic backfill progress kept in the config entry:
+# {statistic_id: "YYYY-MM-DD" (next local day to import) | "done"}
+CONF_BACKFILL_STATE = "backfill_state"
+BACKFILL_DONE = "done"
+
+# Import history in chunks of this many days, saving progress after each,
+# so a long backfill shows up month by month and resumes after an error.
+CHUNK_DAYS = 30
 
 DEFAULT_UNIT = "gal"
 DEFAULT_BACKFILL_DAYS = 30

@@ -72,6 +72,12 @@ class MyWaterAdvisorConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    def __init__(self) -> None:
+        """Initialize the flow."""
+        # One device id per setup attempt, reused if the user retries after
+        # an error, so the portal doesn't see a new device on every submit.
+        self._device_id = str(uuid.uuid4())
+
     async def _validate(
         self, email: str, password: str, device_id: str
     ) -> dict[str, str]:
@@ -103,7 +109,7 @@ class MyWaterAdvisorConfigFlow(ConfigFlow, domain=DOMAIN):
             await self.async_set_unique_id(email.lower())
             self._abort_if_unique_id_configured()
 
-            device_id = str(uuid.uuid4())
+            device_id = self._device_id
             errors = await self._validate(email, user_input[CONF_PASSWORD], device_id)
             if not errors:
                 return self.async_create_entry(
