@@ -40,9 +40,17 @@ UNIT_OPTIONS = {
 # late or corrected readings are picked up.
 LOOKBACK_DAYS = 3
 
+# Options (Configure button).
 # Meter data reaches the portal in batches and often a day or more late, so
-# polling more often gains nothing.
-UPDATE_INTERVAL = timedelta(hours=4)
+# polling more often than every few hours gains nothing.
+CONF_POLL_HOURS = "poll_hours"
+DEFAULT_POLL_HOURS = 4
+MIN_POLL_HOURS = 1  # the portal locks accounts; don't allow faster polling
+MAX_POLL_HOURS = 24
+CONF_HOUR_LABEL = "hour_label"
+HOUR_LABEL_START = "start"  # portal label 11:00 = usage 11:00-12:00
+HOUR_LABEL_END = "end"  # portal label 12:00 = usage 11:00-12:00
+DEFAULT_HOUR_LABEL = HOUR_LABEL_START
 
 # Pause between portal requests during a backfill.
 REQUEST_DELAY_SECONDS = 0.3

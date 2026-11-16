@@ -34,5 +34,28 @@
       "already_configured": "This account is already set up.",
       "reauth_successful": "Password updated."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "My Water Advisor options",
+        "data": {
+          "poll_hours": "Check the portal every",
+          "hour_label": "Portal hour labels mark"
+        },
+        "data_description": {
+          "poll_hours": "1 to 24 hours. The portal posts readings in batches, often a day late, and locks accounts that sign in too often, so a few hours is plenty.",
+          "hour_label": "Compare a day with the portal's Hourly chart. Changing this only affects newly imported hours; remove and re-add the integration to re-import history."
+        }
+      }
+    }
+  },
+  "selector": {
+    "hour_label": {
+      "options": {
+        "start": "The start of the hour (11:00 = 11:00-12:00)",
+        "end": "The end of the hour (12:00 = 11:00-12:00)"
+      }
+    }
   }
 }

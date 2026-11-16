@@ -92,8 +92,8 @@ async def test_first_import_matches_portal(
     stats = await _stats(hass)
     assert len(stats) == 49  # Oct 21 00:00 .. Oct 23 00:00 local
     assert stats[0]["start"] == datetime(2026, 10, 21, 5, tzinfo=UTC).timestamp()
-    # The two -0.1 readings are clamped, so the total is 0.2 above 496.4.
-    assert stats[-1]["sum"] == pytest.approx(496.5, abs=0.01)
+    # The trailing -0.1 correction cancels the 0.1 before it.
+    assert stats[-1]["sum"] == pytest.approx(496.4, abs=0.01)
     assert all(b["sum"] >= a["sum"] for a, b in zip(stats, stats[1:], strict=False))
 
     ids = await get_instance(hass).async_add_executor_job(list_statistic_ids, hass, {STAT_ID})
@@ -114,7 +114,7 @@ async def test_update_continues_running_total(
     await _setup(hass, entry, portal)
 
     first = await _stats(hass)
-    expected_first = 10 * 240 + 496.5
+    expected_first = 10 * 240 + 496.4
     assert first[-1]["sum"] == pytest.approx(expected_first, abs=0.01)
 
     # Next day: the rest of Oct 23 arrives (24 gal) and an Oct 22 hour is

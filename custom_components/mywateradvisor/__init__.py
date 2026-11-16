@@ -34,6 +34,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MwaConfigEntry) -> bool:
 
     coordinator = MwaCoordinator(hass, entry, client)
     entry.runtime_data = coordinator
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
     # A first-time backfill can take a minute or more, so run it in the
     # background instead of holding up Home Assistant's startup.
@@ -41,6 +42,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: MwaConfigEntry) -> bool:
         hass, coordinator.async_refresh(), "mywateradvisor_initial_import"
     )
     return True
+
+
+async def _async_options_updated(hass: HomeAssistant, entry: MwaConfigEntry) -> None:
+    """Reload when the options change.
+
+    Backfill progress is also saved in entry data, which fires this listener
+    too; only an options change needs a reload.
+    """
+    if dict(entry.options) != entry.runtime_data.options:
+        await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: MwaConfigEntry) -> bool:

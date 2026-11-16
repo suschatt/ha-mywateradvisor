@@ -27,6 +27,7 @@ from .api import (
     MwaClient,
     MwaLoginRefusedError,
     plan_chunks,
+    net_negatives,
     rows_to_hours,
     trim_unreported,
 )
@@ -41,7 +42,11 @@ from .const import (
     DOMAIN,
     LOOKBACK_DAYS,
     REFUSALS_BEFORE_REAUTH,
-    UPDATE_INTERVAL,
+    CONF_HOUR_LABEL,
+    CONF_POLL_HOURS,
+    DEFAULT_HOUR_LABEL,
+    DEFAULT_POLL_HOURS,
+    HOUR_LABEL_END,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -109,10 +114,17 @@ class MwaCoordinator(DataUpdateCoordinator[None]):
             _LOGGER,
             config_entry=entry,
             name=DOMAIN,
-            update_interval=UPDATE_INTERVAL,
+            update_interval=timedelta(
+                hours=entry.options.get(CONF_POLL_HOURS, DEFAULT_POLL_HOURS)
+            ),
         )
         self.client = client
         self.unit: str = entry.data.get(CONF_UNIT, DEFAULT_UNIT)
+        self.options = dict(entry.options)  # reload only when these change
+        self.poll_interval: timedelta = self.update_interval
+        self.label_is_end = (
+            entry.options.get(CONF_HOUR_LABEL, DEFAULT_HOUR_LABEL) == HOUR_LABEL_END
+        )
         self.backfill_days: int = int(
             entry.data.get(CONF_BACKFILL_DAYS, DEFAULT_BACKFILL_DAYS)
         )
@@ -154,7 +166,7 @@ class MwaCoordinator(DataUpdateCoordinator[None]):
         Only matters without a token: with one, the next poll needs no login.
         """
         wait = 0.0 if self.client.has_token else self.client.guard.wait_seconds()
-        self.update_interval = timedelta(seconds=wait + 60) if wait else UPDATE_INTERVAL
+        self.update_interval = timedelta(seconds=wait + 60) if wait else self.poll_interval
 
     def _backfill_state(self) -> dict[str, str]:
         """Return per-statistic backfill progress stored in the config entry."""
@@ -253,20 +265,24 @@ class MwaCoordinator(DataUpdateCoordinator[None]):
             rows = await self.client.get_hourly_rows(chunk_first, chunk_last, meter_count)
             start_utc = _local_midnight(chunk_first, tz)
             end_utc = _local_midnight(chunk_last + timedelta(days=1), tz)
+            estimated: set[datetime] = set()
             hours = {
                 start: value
-                for start, value in rows_to_hours(rows, tz).items()
+                for start, value in rows_to_hours(
+                    rows, tz, self.label_is_end, estimated
+                ).items()
                 if start_utc <= start < end_utc
             }
             if is_newest:
                 # Only the newest chunk can contain hours the portal hasn't
-                # received yet (padded with zeros).
-                hours = trim_unreported(hours)
+                # received yet (padded with zeros or estimated).
+                hours = trim_unreported(hours, estimated)
+            hours = net_negatives(hours)
 
             if hours:
                 stats: list[StatisticData] = []
                 for start in sorted(hours):
-                    value = max(hours[start], 0.0)  # meters occasionally report -0.1
+                    value = hours[start]
                     total += value
                     stats.append(
                         StatisticData(start=start, state=round(value, 3), sum=round(total, 3))

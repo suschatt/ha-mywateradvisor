@@ -333,13 +333,22 @@ class MwaClient:
         return rows
 
 
-def rows_to_hours(rows: list[dict[str, Any]], tz: tzinfo) -> dict[datetime, float]:
+def rows_to_hours(
+    rows: list[dict[str, Any]],
+    tz: tzinfo,
+    label_is_end: bool = False,
+    estimated: set[datetime] | None = None,
+) -> dict[datetime, float]:
     """Convert portal rows to {utc hour start: volume}.
 
-    Portal labels are local wall-clock hours without an offset. On the
-    fall-back day a repeated label goes to the second (standard time) hour;
-    on the spring-forward day a nonexistent label is merged into the hour it
-    collides with so no volume is lost.
+    Portal labels are local wall-clock hours without an offset. They mark the
+    hour's start, or its end when `label_is_end` (some utilities label 12:00
+    for 11:00-12:00). On the fall-back day a repeated label goes to the second
+    (standard time) hour; on the spring-forward day a nonexistent label is
+    merged into the hour it collides with so no volume is lost.
+
+    Rows with a non-zero `estimationType` (or `estimated: true`) are added to
+    `estimated`, when given.
     """
     hours: dict[datetime, float] = {}
     for row in rows:
@@ -351,6 +360,8 @@ def rows_to_hours(rows: list[dict[str, Any]], tz: tzinfo) -> dict[datetime, floa
             value = float(row.get("cons") or 0.0)
         except (AttributeError, TypeError, ValueError) as err:
             raise MwaApiError(f"Unexpected hourly data: {row!r}") from err
+        if label_is_end:
+            naive -= timedelta(hours=1)
         start = naive.replace(tzinfo=tz).astimezone(UTC)
         if start in hours:
             alt = naive.replace(tzinfo=tz, fold=1).astimezone(UTC)
@@ -360,7 +371,35 @@ def rows_to_hours(rows: list[dict[str, Any]], tz: tzinfo) -> dict[datetime, floa
                 hours[start] += value
                 continue
         hours[start] = value
+        if estimated is not None and (row.get("estimationType") or row.get("estimated")):
+            estimated.add(start)
     return hours
+
+
+def net_negatives(hours: dict[datetime, float]) -> dict[datetime, float]:
+    """Cancel negative readings against the hours before them.
+
+    The portal backs out a bad reading by posting a negative one later.
+    Clamping the negative to 0 would keep the bad usage, so subtract it from
+    the most recent earlier hours instead. Anything left over (the bad hour is
+    outside the fetched range) is dropped. Every returned value is >= 0.
+    """
+    out: dict[datetime, float] = {}
+    for start in sorted(hours):
+        value = hours[start]
+        if value < 0:
+            debt = -value
+            for earlier in sorted(out, reverse=True):
+                if debt <= 0:
+                    break
+                taken = min(out[earlier], debt)
+                out[earlier] -= taken
+                debt -= taken
+            if debt > 1e-9:
+                _LOGGER.debug("Dropped %.3f of negative reading at %s", debt, start)
+            value = 0.0
+        out[start] = value
+    return out
 
 
 def plan_chunks(first: date, last: date, size: int) -> list[tuple[date, date]]:
@@ -380,14 +419,17 @@ def plan_chunks(first: date, last: date, size: int) -> list[tuple[date, date]]:
     return chunks
 
 
-def trim_unreported(hours: dict[datetime, float]) -> dict[datetime, float]:
-    """Drop trailing zero hours.
+def trim_unreported(
+    hours: dict[datetime, float], estimated: set[datetime] | frozenset = frozenset()
+) -> dict[datetime, float]:
+    """Drop trailing zero or estimated hours.
 
     The portal pads hours that have not been reported yet with 0, so zeros
-    after the last nonzero reading mean "unknown", not "no usage".
+    after the last real reading mean "unknown", not "no usage". Trailing
+    estimates are dropped too; the real reading replaces them on a later poll.
     """
-    nonzero = [start for start, value in hours.items() if value != 0]
-    if not nonzero:
+    real = [start for start, value in hours.items() if value != 0 and start not in estimated]
+    if not real:
         return {}
-    cutoff = max(nonzero)
+    cutoff = max(real)
     return {start: value for start, value in hours.items() if start <= cutoff}

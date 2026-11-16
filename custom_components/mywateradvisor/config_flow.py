@@ -9,7 +9,13 @@ import uuid
 
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
+from homeassistant.core import callback
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
@@ -27,6 +33,14 @@ from homeassistant.helpers.selector import (
 
 from .api import MwaApiError, MwaAuthError, MwaClient, MwaLoginRefusedError
 from .const import (
+    CONF_HOUR_LABEL,
+    CONF_POLL_HOURS,
+    DEFAULT_HOUR_LABEL,
+    DEFAULT_POLL_HOURS,
+    HOUR_LABEL_END,
+    HOUR_LABEL_START,
+    MAX_POLL_HOURS,
+    MIN_POLL_HOURS,
     CONF_BACKFILL_DAYS,
     CONF_BACKFILL_STATE,
     CONF_DEVICE_ID,
@@ -73,6 +87,12 @@ class MyWaterAdvisorConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for My Water Advisor."""
 
     VERSION = 1
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> MwaOptionsFlow:
+        """Return the options flow."""
+        return MwaOptionsFlow()
 
     def __init__(self) -> None:
         """Initialize the flow."""
@@ -167,3 +187,47 @@ class MyWaterAdvisorConfigFlow(ConfigFlow, domain=DOMAIN):
             description_placeholders={"email": entry.data[CONF_EMAIL]},
             errors=errors,
         )
+
+
+class MwaOptionsFlow(OptionsFlow):
+    """Poll interval and how the portal labels its hours."""
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Show the options form."""
+        if user_input is not None:
+            return self.async_create_entry(
+                data={
+                    CONF_POLL_HOURS: int(user_input[CONF_POLL_HOURS]),
+                    CONF_HOUR_LABEL: user_input[CONF_HOUR_LABEL],
+                }
+            )
+        options = self.config_entry.options
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_POLL_HOURS,
+                    default=options.get(CONF_POLL_HOURS, DEFAULT_POLL_HOURS),
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=MIN_POLL_HOURS,
+                        max=MAX_POLL_HOURS,
+                        step=1,
+                        unit_of_measurement="h",
+                        mode=NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Required(
+                    CONF_HOUR_LABEL,
+                    default=options.get(CONF_HOUR_LABEL, DEFAULT_HOUR_LABEL),
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[HOUR_LABEL_START, HOUR_LABEL_END],
+                        translation_key=CONF_HOUR_LABEL,
+                        mode=SelectSelectorMode.LIST,
+                    )
+                ),
+            }
+        )
+        return self.async_show_form(step_id="init", data_schema=schema)
